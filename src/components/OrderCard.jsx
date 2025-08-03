@@ -1,7 +1,6 @@
 // OrderCard.jsx
 import React from 'react';
 
-// Ahora recibimos 'displayTableNumber'
 export default function OrderCard({ order, isSelected, displayTableNumber }) {
   const getStatusConfig = (status) => {
     switch (status) {

@@ -1,95 +1,81 @@
-// QueueSidebar.jsx
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 
-export default function QueueSidebar({ queue, displayedCount = 6, className, selectedIndex }) {
+export default function QueueSidebar({ 
+  queue, 
+  displayedCount = 6, 
+  className, 
+  selectedIndex,
+  onOrderSelect 
+}) {
+  const [processedQueue, setProcessedQueue] = useState([]);
+
+  // Sincronizar con la cola principal y calcular índices absolutos
+  useEffect(() => {
+    setProcessedQueue(
+      queue.map((order, index) => ({
+        ...order,
+        absoluteIndex: index,
+        isInMainGrid: index < displayedCount
+      }))
+    );
+  }, [queue, displayedCount]);
+
   const getStatusConfig = (status) => {
-    switch (status) {
-      case 'NEW':
-      case 'COOKING':
-      case 'PREPARING':
-        return { color: 'text-green-400', bgColor: 'bg-green-400' };
-      case 'ALMOST_DONE':
-        return { color: 'text-orange-400', bgColor: 'bg-orange-400' };
-      case 'OVERDUE':
-        return { color: 'text-red-400', bgColor: 'bg-red-400' };
-      case 'READY':
-        return { color: 'text-blue-400', bgColor: 'bg-blue-400' };
-      default:
-        return { color: 'text-green-400', bgColor: 'bg-green-400' };
-    }
+    const config = {
+      'NEW': { color: 'text-green-400', bgColor: 'bg-green-400' },
+      'COOKING': { color: 'text-green-400', bgColor: 'bg-green-400' },
+      'PREPARING': { color: 'text-green-400', bgColor: 'bg-green-400' },
+      'ALMOST_DONE': { color: 'text-orange-400', bgColor: 'bg-orange-400' },
+      'OVERDUE': { color: 'text-red-400', bgColor: 'bg-red-400' },
+      'READY': { color: 'text-blue-400', bgColor: 'bg-blue-400' }
+    };
+    return config[status] || config['NEW'];
   };
 
-  const getStatusText = (status) => {
-    switch (status) {
-      case 'NEW':
-      case 'COOKING':
-      case 'PREPARING':
-        return 'COOKING';
-      case 'ALMOST_DONE':
-        return 'ALMOST DONE';
-      case 'OVERDUE':
-        return 'OVERDUE';
-      case 'READY':
-        return 'READY';
-      default:
-        return 'COOKING';
+  const handleOrderClick = (absoluteIndex) => {
+    if (onOrderSelect) {
+      onOrderSelect(absoluteIndex);
     }
-  };
-
-  const getTimeDisplay = (order) => {
-    if (order.status === 'OVERDUE') return 'OVERDUE';
-    return order.timeRemaining || '15:00';
   };
 
   return (
-    <div className={`${className} bg-gray-800 text-white p-6 flex flex-col min-h-0`}>
-      <h2 className="text-lg font-bold mb-6 uppercase tracking-wide">Queue</h2>
+    <div className={`${className} bg-gray-800 text-white p-4 flex flex-col min-h-0`}>
+      <h2 className="text-lg font-bold mb-4 uppercase tracking-wide sticky top-0 bg-gray-800 py-2 z-10">
+        Queue ({queue.length - displayedCount > 0 ? queue.length - displayedCount : 0})
+      </h2>
 
-      <div className="space-y-3 flex-1 max-h-full overflow-y-auto hide-scrollbar">
-        {queue.map((order, index) => { // 'index' here is the position in the 'queue' array
-          const statusConfig = getStatusConfig(order.status);
-          const isInMainGrid = index < displayedCount;
-          const isCurrentlySelected = index === selectedIndex;
-          const queueNumber = index + 1; // This will be the consecutive queue number
-
-          return (
+      <div className="space-y-2 flex-1 overflow-y-auto">
+        {processedQueue
+          .filter(order => !order.isInMainGrid)
+          .map((order) => (
             <div
               key={order.id}
-              className={`flex items-center justify-between p-4 rounded-lg transition-colors
-                ${isCurrentlySelected ? 'bg-blue-700 ring-2 ring-blue-400' : 'bg-gray-700 hover:bg-gray-600'}
-                ${isInMainGrid && !isCurrentlySelected ? 'border-l-4 border-blue-400' : ''}
+              onClick={() => handleOrderClick(order.absoluteIndex)}
+              className={`flex items-center justify-between p-3 rounded-lg cursor-pointer transition-all
+                ${order.absoluteIndex === selectedIndex ? 
+                  'bg-blue-700 ring-2 ring-blue-400' : 
+                  'bg-gray-700 hover:bg-gray-600'}
               `}
             >
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
-                  {/* Displays the consecutive queue number */}
-                  <p className="font-medium text-white">QUEUE #{queueNumber}</p>
-                  {isInMainGrid && (
-                    <span className={`text-xs ${isCurrentlySelected ? 'bg-blue-400' : 'bg-blue-500'} text-white px-2 py-1 rounded-full`}>
-                      ACTIVE
-                    </span>
-                  )}
-                </div>
-                <div className={`flex items-center gap-2 text-sm ${statusConfig.color}`}>
-                  <div className={`w-2 h-2 ${statusConfig.bgColor} rounded-full`}></div>
-                  <span className="uppercase font-medium">{getStatusText(order.status)}</span>
+              <div className="flex items-center gap-3">
+                <div className={`w-3 h-3 ${getStatusConfig(order.status).bgColor} rounded-full`}></div>
+                <div>
+                  <p className="font-medium text-sm">#{order.id.split('-')[1]}</p>
+                  <p className="text-xs text-gray-400">Table {order.table}</p>
                 </div>
               </div>
               <div className="text-right">
-                <p className="text-sm text-gray-300 font-mono">
-                  {getTimeDisplay(order)}
-                </p>
-                <p className="text-xs text-gray-400">
-                  {order.startTimeFormatted || order.startedAt}
+                <p className={`text-sm font-mono ${getStatusConfig(order.status).color}`}>
+                  {order.status === 'OVERDUE' ? 'OVERDUE' : order.timeRemaining || '--:--'}
                 </p>
               </div>
             </div>
-          );
-        })}
+          ))
+        }
 
-        {queue.length === 0 && (
-          <div className="text-center text-gray-500 py-8">
-            <p>No orders in queue</p>
+        {processedQueue.filter(order => !order.isInMainGrid).length === 0 && (
+          <div className="text-center text-gray-500 py-6">
+            <p className="text-sm">No orders waiting</p>
           </div>
         )}
       </div>

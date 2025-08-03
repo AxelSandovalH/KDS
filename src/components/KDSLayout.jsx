@@ -1,122 +1,138 @@
-// KDSLayout.jsx
 import React, { useState, useEffect, useCallback } from 'react';
 import OrderCard from './OrderCard';
 import QueueSidebar from './QueueSidebar';
 import io from 'socket.io-client';
 
-// Utility to format time (MM:SS)
 const formatTime = (seconds) => {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 };
 
-// Connect to the Socket.IO server
-const socket = io('http://localhost:5000');
-
 export default function KDSLayout() {
   const [allOrders, setAllOrders] = useState([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [lastEnterTime, setLastEnterTime] = useState(0);
   const [displayStartIndex, setDisplayStartIndex] = useState(0);
+  const [socket, setSocket] = useState(null);
   const MAX_DISPLAYED_ORDERS = 6;
 
-  // Helper function to adjust displayStartIndex and selectedIndex
-  const adjustDisplayWindow = useCallback((currentSelectedIndex, totalOrdersLength) => {
-    if (totalOrdersLength === 0) {
-      setSelectedIndex(0);
-      setDisplayStartIndex(0);
-      return;
-    }
-
-    const newSelectedIndex = Math.min(currentSelectedIndex, totalOrdersLength - 1);
-
-    if (newSelectedIndex >= displayStartIndex + MAX_DISPLAYED_ORDERS) {
-      setDisplayStartIndex(newSelectedIndex - MAX_DISPLAYED_ORDERS + 1);
-    } else if (newSelectedIndex < displayStartIndex) {
-      setDisplayStartIndex(newSelectedIndex);
-    } else if (newSelectedIndex === displayStartIndex && displayStartIndex > 0) {
-        setDisplayStartIndex(displayStartIndex - 1);
-    } else if (newSelectedIndex === displayStartIndex + MAX_DISPLAYED_ORDERS -1 &&
-               displayStartIndex + MAX_DISPLAYED_ORDERS < totalOrdersLength) {
-        setDisplayStartIndex(displayStartIndex + 1);
-    }
-
-    setSelectedIndex(newSelectedIndex);
-  }, [displayStartIndex, MAX_DISPLAYED_ORDERS]);
-
+  // Initialize Socket.IO connection
   useEffect(() => {
-    socket.on('connect', () => {
-      console.log('Connected to WebSocket server');
+    const newSocket = io('http://localhost:5000', {
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      timeout: 20000
     });
 
-    socket.on('new_order', (newOrder) => {
-      console.log('--- NEW_ORDER EVENT RECEIVED ---');
-      console.log('New order data received (newOrder):', newOrder);
+    setSocket(newSocket);
 
-      setAllOrders(prevOrders => {
-        const orderWithTimerInfo = {
-          ...newOrder,
-          startTime: Date.now(),
-          initialDuration: newOrder.initialDuration || (15 * 60),
-          status: newOrder.status || 'NEW',
-        };
-        console.log('Previous order state (prevOrders):', prevOrders);
-        console.log('Formatted order to add (orderWithTimerInfo):', orderWithTimerInfo);
+    return () => {
+      newSocket.disconnect();
+    };
+  }, []);
 
-        const updatedOrders = [...prevOrders, orderWithTimerInfo];
-        if (prevOrders.length === 0 && updatedOrders.length > 0) {
-            adjustDisplayWindow(0, updatedOrders.length);
-        } else {
-            if (selectedIndex >= displayStartIndex + MAX_DISPLAYED_ORDERS) {
-                 adjustDisplayWindow(selectedIndex, updatedOrders.length);
-            }
+  // Load initial orders from database
+  useEffect(() => {
+    const fetchInitialOrders = async () => {
+      try {
+        const response = await fetch('http://localhost:5000/orders');
+        if (response.ok) {
+          const orders = await response.json();
+          const ordersWithTimers = orders.map(order => ({
+            ...order,
+            startTime: Date.now() - (15 * 60 - (order.initialDuration || 15 * 60)) * 1000,
+            timeRemaining: formatTime(order.initialDuration || 15 * 60),
+            startTimeFormatted: order.startedAt
+          }));
+          setAllOrders(ordersWithTimers);
         }
-        return updatedOrders;
-      });
-    });
+      } catch (error) {
+        console.error('Error loading initial orders:', error);
+      }
+    };
 
-    socket.on('order_updated', (updatedOrder) => {
-        console.log('Order updated received:', updatedOrder);
+    fetchInitialOrders();
+  }, []);
+
+  // Socket.IO event handlers
+  useEffect(() => {
+    if (!socket) return;
+
+    const handlers = {
+      connect: () => console.log('Connected to WebSocket server'),
+      new_order: (newOrder) => {
+        setAllOrders(prevOrders => {
+          const orderWithTimerInfo = {
+            ...newOrder,
+            startTime: Date.now(),
+            initialDuration: newOrder.initialDuration || (15 * 60),
+            status: newOrder.status || 'COOKING',
+            timeRemaining: formatTime(newOrder.initialDuration || 15 * 60),
+            startTimeFormatted: newOrder.startedAt
+          };
+          
+          const updatedOrders = [...prevOrders, orderWithTimerInfo];
+          
+          if (prevOrders.length === 0 && updatedOrders.length > 0) {
+            adjustDisplayWindow(0, updatedOrders.length);
+          } else if (selectedIndex >= displayStartIndex + MAX_DISPLAYED_ORDERS) {
+            adjustDisplayWindow(selectedIndex, updatedOrders.length);
+          }
+          
+          return updatedOrders;
+        });
+      },
+      order_updated: (updatedOrder) => {
         setAllOrders(prevOrders => prevOrders.map(order =>
-          order.id === updatedOrder.id ? { ...order, ...updatedOrder } : order
+          order.id === updatedOrder.id ? { 
+            ...order, 
+            ...updatedOrder,
+            timeRemaining: formatTime(updatedOrder.initialDuration - Math.floor((Date.now() - order.startTime) / 1000))
+          } : order
         ));
-    });
+      },
+      order_removed: ({ id }) => {
+        setAllOrders(prevOrders => {
+          const filteredOrders = prevOrders.filter(order => order.id !== id);
+          adjustDisplayWindow(Math.min(selectedIndex, filteredOrders.length - 1), filteredOrders.length);
+          return filteredOrders;
+        });
+      },
+      disconnect: () => console.log('Disconnected from WebSocket server')
+    };
 
-    socket.on('disconnect', () => {
-      console.log('Disconnected from WebSocket server');
-    });
-
-    socket.on('system_status', (statusData) => {
-        console.log('System status received:', statusData);
+    Object.entries(handlers).forEach(([event, handler]) => {
+      socket.on(event, handler);
     });
 
     return () => {
-      socket.off('connect');
-      socket.off('new_order');
-      socket.off('order_updated');
-      socket.off('disconnect');
-      socket.off('system_status');
+      Object.entries(handlers).forEach(([event, handler]) => {
+        socket.off(event, handler);
+      });
     };
-  }, [allOrders.length, selectedIndex, displayStartIndex, adjustDisplayWindow]);
+  }, [socket, selectedIndex, displayStartIndex]);
 
+  // Timer effect
   useEffect(() => {
     const interval = setInterval(() => {
       setAllOrders(prevOrders =>
         prevOrders.map(order => {
-          if (order.status === 'READY') {
-            return order;
-          }
+          if (order.status === 'READY') return order;
 
           const elapsedSeconds = Math.floor((Date.now() - order.startTime) / 1000);
-          let remainingSeconds = order.initialDuration - elapsedSeconds;
+          let remainingSeconds = Math.max(0, order.initialDuration - elapsedSeconds);
+          
           let status = order.status;
-
           if (remainingSeconds <= 0) {
-            remainingSeconds = 0;
             status = 'OVERDUE';
-          }
-          else if (status === 'COOKING' && remainingSeconds <= 5 * 60) {
+            if (order.status !== 'OVERDUE' && socket) {
+              socket.emit('update_order_status', {
+                order_id: order.id,
+                status: 'OVERDUE'
+              });
+            }
+          } else if (remainingSeconds <= 5 * 60 && status === 'COOKING') {
             status = 'ALMOST_DONE';
           }
 
@@ -130,28 +146,41 @@ export default function KDSLayout() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [socket]);
 
-  const ordersToShowInGrid = allOrders.slice(displayStartIndex, displayStartIndex + MAX_DISPLAYED_ORDERS);
+  const adjustDisplayWindow = useCallback((targetSelectedIndex, totalOrdersLength) => {
+    if (totalOrdersLength === 0) {
+      setSelectedIndex(0);
+      setDisplayStartIndex(0);
+      return;
+    }
 
-  const getRelativeSelectedIndex = useCallback((absoluteIndex) => {
-    return absoluteIndex - displayStartIndex;
-  }, [displayStartIndex]);
+    setSelectedIndex(Math.min(targetSelectedIndex, totalOrdersLength - 1));
+    
+    setDisplayStartIndex(prev => {
+      let newDisplayStart = prev;
+      
+      if (targetSelectedIndex >= prev + MAX_DISPLAYED_ORDERS) {
+        newDisplayStart = targetSelectedIndex - MAX_DISPLAYED_ORDERS + 1;
+      } else if (targetSelectedIndex < prev) {
+        newDisplayStart = targetSelectedIndex;
+      }
+      
+      newDisplayStart = Math.max(0, newDisplayStart);
+      newDisplayStart = Math.min(newDisplayStart, Math.max(0, totalOrdersLength - MAX_DISPLAYED_ORDERS));
+      
+      return totalOrdersLength <= MAX_DISPLAYED_ORDERS ? 0 : newDisplayStart;
+    });
+  }, [MAX_DISPLAYED_ORDERS]);
 
   const handleNext = useCallback(() => {
     if (allOrders.length === 0) return;
-
-    const newSelectedIndex = (selectedIndex + 1) % allOrders.length;
-    setSelectedIndex(newSelectedIndex);
-    adjustDisplayWindow(newSelectedIndex, allOrders.length);
+    adjustDisplayWindow((selectedIndex + 1) % allOrders.length, allOrders.length);
   }, [allOrders.length, selectedIndex, adjustDisplayWindow]);
 
   const handlePrevious = useCallback(() => {
     if (allOrders.length === 0) return;
-
-    const newSelectedIndex = (selectedIndex - 1 + allOrders.length) % allOrders.length;
-    setSelectedIndex(newSelectedIndex);
-    adjustDisplayWindow(newSelectedIndex, allOrders.length);
+    adjustDisplayWindow((selectedIndex - 1 + allOrders.length) % allOrders.length, allOrders.length);
   }, [allOrders.length, selectedIndex, adjustDisplayWindow]);
 
   const handleMarkDone = useCallback(() => {
@@ -159,40 +188,42 @@ export default function KDSLayout() {
 
     const now = Date.now();
     const delta = now - lastEnterTime;
+    const order = allOrders[selectedIndex];
 
-    const currentlySelectedOrder = allOrders[selectedIndex];
-
-    if (delta < 300) {
-      setAllOrders(prevOrders =>
-        prevOrders.map((order, idx) =>
-          idx === selectedIndex ? {
-            ...order,
-            status: 'ALMOST_DONE',
-            initialDuration: 5 * 60,
-            startTime: Date.now(),
-          } : order
-        )
+    if (delta < 300) { // Double click - Mark as ALMOST_DONE
+      const updatedOrder = {
+        ...order,
+        status: 'ALMOST_DONE',
+        initialDuration: 5 * 60,
+        startTime: Date.now()
+      };
+      
+      socket?.emit('update_order_status', {
+        order_id: order.id,
+        status: 'ALMOST_DONE',
+        initial_duration: 5 * 60
+      });
+      
+      setAllOrders(prevOrders => 
+        prevOrders.map(o => o.id === order.id ? updatedOrder : o)
       );
-    } else {
-      setAllOrders(prevOrders =>
-        prevOrders.map((order, idx) =>
-          idx === selectedIndex ? { ...order, status: 'READY' } : order
-        )
+    } else { // Single click - Mark as READY
+      const updatedOrder = { ...order, status: 'READY' };
+      
+      socket?.emit('update_order_status', {
+        order_id: order.id,
+        status: 'READY'
+      });
+      
+      setAllOrders(prevOrders => 
+        prevOrders.map(o => o.id === order.id ? updatedOrder : o)
       );
 
       setTimeout(() => {
         setAllOrders(prevOrders => {
-          if (prevOrders[selectedIndex] && prevOrders[selectedIndex].status === 'READY') {
-            const filteredOrders = prevOrders.filter((_, idx) => idx !== selectedIndex);
-
-            let nextSelectedIndex = selectedIndex;
-            if (nextSelectedIndex >= filteredOrders.length) {
-                nextSelectedIndex = filteredOrders.length > 0 ? filteredOrders.length - 1 : 0;
-            }
-
-            adjustDisplayWindow(nextSelectedIndex, filteredOrders.length);
-
-            return filteredOrders;
+          if (prevOrders.some(o => o.id === order.id && o.status === 'READY')) {
+            socket?.emit('remove_order', { id: order.id });
+            return prevOrders.filter(o => o.id !== order.id);
           }
           return prevOrders;
         });
@@ -200,22 +231,29 @@ export default function KDSLayout() {
     }
 
     setLastEnterTime(now);
-  }, [allOrders, selectedIndex, lastEnterTime, adjustDisplayWindow]);
+  }, [selectedIndex, lastEnterTime, allOrders, socket]);
 
   const handleResetTimer = useCallback(() => {
     if (allOrders.length === 0 || selectedIndex < 0 || selectedIndex >= allOrders.length) return;
 
+    const order = allOrders[selectedIndex];
+    const updatedOrder = {
+      ...order,
+      status: 'COOKING',
+      initialDuration: 15 * 60,
+      startTime: Date.now()
+    };
+
+    socket?.emit('update_order_status', {
+      order_id: order.id,
+      status: 'COOKING',
+      initial_duration: 15 * 60
+    });
+
     setAllOrders(prevOrders =>
-      prevOrders.map((order, idx) =>
-        idx === selectedIndex ? {
-          ...order,
-          status: 'COOKING',
-          initialDuration: 15 * 60,
-          startTime: Date.now(),
-        } : order
-      )
+      prevOrders.map(o => o.id === order.id ? updatedOrder : o)
     );
-  }, [allOrders, selectedIndex]);
+  }, [allOrders, selectedIndex, socket]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -237,9 +275,15 @@ export default function KDSLayout() {
     });
   };
 
+  const getRelativeSelectedIndex = useCallback((absoluteIndex) => {
+    return absoluteIndex - displayStartIndex;
+  }, [displayStartIndex]);
+
+  const ordersToShowInGrid = allOrders.slice(displayStartIndex, displayStartIndex + MAX_DISPLAYED_ORDERS);
+
   return (
     <div className="h-screen bg-gray-900 text-white flex flex-col">
-      <header className="flex justify-between items-center p-6 bg-gray-900">
+      <header className="flex justify-between items-center p-6 bg-gray-900 border-b border-gray-800">
         <h1 className="text-2xl font-bold">Kitchen Display System</h1>
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 bg-gray-600 rounded-full flex items-center justify-center">
@@ -260,9 +304,8 @@ export default function KDSLayout() {
             return order ? (
               <OrderCard
                 key={order.id}
-                order={order} // Pasamos el objeto order completo (contiene order.table)
+                order={order}
                 isSelected={isSelected}
-                // Pasamos el número de mesa real de la orden para mostrar
                 displayTableNumber={order.table}
               />
             ) : (
@@ -276,7 +319,7 @@ export default function KDSLayout() {
         <QueueSidebar
           queue={allOrders}
           displayedCount={MAX_DISPLAYED_ORDERS}
-          className="w-64"
+          className="w-64 border-l border-gray-800"
           selectedIndex={selectedIndex}
         />
       </div>
