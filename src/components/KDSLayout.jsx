@@ -114,39 +114,62 @@ export default function KDSLayout() {
   }, [socket, selectedIndex, displayStartIndex]);
 
   // Timer effect
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setAllOrders(prevOrders =>
-        prevOrders.map(order => {
-          if (order.status === 'READY') return order;
+// Timer effect - Versión corregida
+useEffect(() => {
+  const interval = setInterval(() => {
+    setAllOrders(prevOrders =>
+      prevOrders.map(order => {
+        if (order.status === 'READY') return order;
 
-          const elapsedSeconds = Math.floor((Date.now() - order.startTime) / 1000);
-          let remainingSeconds = Math.max(0, order.initialDuration - elapsedSeconds);
-          
-          let status = order.status;
-          if (remainingSeconds <= 0) {
-            status = 'OVERDUE';
-            if (order.status !== 'OVERDUE' && socket) {
-              socket.emit('update_order_status', {
-                order_id: order.id,
-                status: 'OVERDUE'
-              });
-            }
-          } else if (remainingSeconds <= 5 * 60 && status === 'COOKING') {
-            status = 'ALMOST_DONE';
+        // Calculamos el tiempo transcurrido
+        const elapsedSeconds = Math.floor((Date.now() - order.startTime) / 1000);
+        
+        // Si el estado es ALMOST_DONE, forzamos que el tiempo restante sea 5 minutos
+        let remainingSeconds = order.status === 'ALMOST_DONE' 
+          ? Math.max(0, 5 * 60 - Math.floor((Date.now() - order.startTime) / 1000))
+          : Math.max(0, order.initialDuration - elapsedSeconds);
+        
+        let status = order.status;
+        
+        // Transición de estados
+        if (remainingSeconds <= 0) {
+          status = 'OVERDUE';
+          if (order.status !== 'OVERDUE' && socket) {
+            socket.emit('update_order_status', {
+              order_id: order.id,
+              status: 'OVERDUE'
+            });
           }
-
-          return {
+        } else if (remainingSeconds <= 5 * 60 && status === 'COOKING') {
+          status = 'ALMOST_DONE';
+          // Reiniciamos el startTime para que cuente desde 5 minutos
+          const updatedOrder = {
             ...order,
-            status,
-            timeRemaining: formatTime(remainingSeconds),
+            status: 'ALMOST_DONE',
+            startTime: Date.now(),
+            initialDuration: 5 * 60
           };
-        })
-      );
-    }, 1000);
+          
+          socket?.emit('update_order_status', {
+            order_id: order.id,
+            status: 'ALMOST_DONE',
+            initial_duration: 5 * 60
+          });
+          
+          return updatedOrder;
+        }
 
-    return () => clearInterval(interval);
-  }, [socket]);
+        return {
+          ...order,
+          status,
+          timeRemaining: formatTime(remainingSeconds),
+        };
+      })
+    );
+  }, 1000);
+
+  return () => clearInterval(interval);
+}, [socket]);
 
   const adjustDisplayWindow = useCallback((targetSelectedIndex, totalOrdersLength) => {
     if (totalOrdersLength === 0) {
@@ -183,55 +206,60 @@ export default function KDSLayout() {
     adjustDisplayWindow((selectedIndex - 1 + allOrders.length) % allOrders.length, allOrders.length);
   }, [allOrders.length, selectedIndex, adjustDisplayWindow]);
 
-  const handleMarkDone = useCallback(() => {
-    if (allOrders.length === 0 || selectedIndex < 0 || selectedIndex >= allOrders.length) return;
+const handleMarkDone = useCallback(() => {
+  if (allOrders.length === 0 || selectedIndex < 0 || selectedIndex >= allOrders.length) return;
 
-    const now = Date.now();
-    const delta = now - lastEnterTime;
-    const order = allOrders[selectedIndex];
+  const now = Date.now();
+  const delta = now - lastEnterTime;
+  const order = allOrders[selectedIndex];
 
-    if (delta < 300) { // Double click - Mark as ALMOST_DONE
-      const updatedOrder = {
-        ...order,
-        status: 'ALMOST_DONE',
-        initialDuration: 5 * 60,
-        startTime: Date.now()
-      };
-      
-      socket?.emit('update_order_status', {
-        order_id: order.id,
-        status: 'ALMOST_DONE',
-        initial_duration: 5 * 60
+  if (delta < 300) { // Double click - Mark as ALMOST_DONE
+    const updatedOrder = {
+      ...order,
+      status: 'ALMOST_DONE',
+      initialDuration: 5 * 60,
+      startTime: Date.now(), // Reiniciamos el tiempo completamente
+      timeRemaining: '5:00'
+    };
+    
+    socket?.emit('update_order_status', {
+      order_id: order.id,
+      status: 'ALMOST_DONE',
+      initial_duration: 5 * 60
+    });
+    
+    setAllOrders(prevOrders => 
+      prevOrders.map(o => o.id === order.id ? updatedOrder : o)
+    );
+  } else { // Single click - Mark as READY
+    const updatedOrder = { 
+      ...order, 
+      status: 'READY',
+      timeRemaining: '0:00'
+    };
+    
+    socket?.emit('update_order_status', {
+      order_id: order.id,
+      status: 'READY'
+    });
+    
+    setAllOrders(prevOrders => 
+      prevOrders.map(o => o.id === order.id ? updatedOrder : o)
+    );
+
+    setTimeout(() => {
+      setAllOrders(prevOrders => {
+        if (prevOrders.some(o => o.id === order.id && o.status === 'READY')) {
+          socket?.emit('remove_order', { id: order.id });
+          return prevOrders.filter(o => o.id !== order.id);
+        }
+        return prevOrders;
       });
-      
-      setAllOrders(prevOrders => 
-        prevOrders.map(o => o.id === order.id ? updatedOrder : o)
-      );
-    } else { // Single click - Mark as READY
-      const updatedOrder = { ...order, status: 'READY' };
-      
-      socket?.emit('update_order_status', {
-        order_id: order.id,
-        status: 'READY'
-      });
-      
-      setAllOrders(prevOrders => 
-        prevOrders.map(o => o.id === order.id ? updatedOrder : o)
-      );
+    }, 300);
+  }
 
-      setTimeout(() => {
-        setAllOrders(prevOrders => {
-          if (prevOrders.some(o => o.id === order.id && o.status === 'READY')) {
-            socket?.emit('remove_order', { id: order.id });
-            return prevOrders.filter(o => o.id !== order.id);
-          }
-          return prevOrders;
-        });
-      }, 300);
-    }
-
-    setLastEnterTime(now);
-  }, [selectedIndex, lastEnterTime, allOrders, socket]);
+  setLastEnterTime(now);
+}, [selectedIndex, lastEnterTime, allOrders, socket]);
 
   const handleResetTimer = useCallback(() => {
     if (allOrders.length === 0 || selectedIndex < 0 || selectedIndex >= allOrders.length) return;
